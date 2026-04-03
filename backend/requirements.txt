@@ -1,0 +1,9 @@
+# cd backend && python3 -m venv .venv && source .venv/bin/activate
+# pip install -r requirements.txt
+#
+# Migrations (from repo root or backend):
+#   backend/.venv/bin/python backend/scripts/db_migrate.py
+#   backend/.venv/bin/python backend/scripts/db_seed.py
+
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0

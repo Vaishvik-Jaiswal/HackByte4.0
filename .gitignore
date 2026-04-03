@@ -1,0 +1,17 @@
+# Secrets
+backend/.env
+frontend/.env.local
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+
+# Node (when you add a Next.js app later)
+frontend/node_modules/
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
