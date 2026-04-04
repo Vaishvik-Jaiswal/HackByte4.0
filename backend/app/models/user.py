@@ -28,6 +28,9 @@ class OAuth(Base):
     access_token = Column(Text, nullable=False)
     refresh_token = Column(Text, nullable=True)
     expires_at = Column(DateTime, nullable=True)
+    provider = Column(String, default="google") # google, gmail, etc.
+    scope = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     owner = relationship("User", back_populates="oauth_tokens")
+

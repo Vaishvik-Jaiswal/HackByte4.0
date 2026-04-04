@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gmail-bg: #f6f8fc;
+  --gmail-sidebar: #f6f8fc;
+  --gmail-active: #d3e3fd;
+  --gmail-hover: #eaf1fb;
+  --gmail-border: #e0e3e9;
+  --gmail-text-primary: #1f1f1f;
+  --gmail-text-secondary: #5e5e5e;
+  --gmail-blue: #0b57d0;
+  --gmail-compose-bg: #c2e7ff;
+  --gmail-compose-text: #001d35;
+  
+  font-family: 'Roboto', 'Inter', system-ui, sans-serif;
+  background-color: var(--gmail-bg);
+  color: var(--gmail-text-primary);
+}
+
+@layer base {
+  body {
+    @apply bg-[var(--gmail-bg)] text-[var(--gmail-text-primary)];
+  }
+}
+
+.gmail-sidebar-item {
+  @apply flex items-center gap-4 px-6 py-2 rounded-full cursor-pointer transition-all text-sm font-medium hover:bg-[var(--gmail-hover)];
+}
+
+.gmail-sidebar-item.active {
+  @apply bg-[var(--gmail-active)] text-[var(--gmail-compose-text)];
+}
+
+.gmail-email-row {
+  @apply flex items-center gap-4 px-4 py-3 border-b border-[var(--gmail-border)] cursor-pointer hover:shadow-md transition-all hover:z-10 relative bg-white;
+}
+
+.gmail-email-row.unread {
+  @apply font-bold bg-[#f2f6fc];
+}
+
+.gmail-compose-btn {
+  @apply flex items-center gap-3 bg-[var(--gmail-compose-bg)] text-[var(--gmail-compose-text)] px-5 py-4 rounded-2xl font-medium shadow-sm hover:shadow-md transition-all;
+}
+
+.gmail-search-bar {
+  @apply flex items-center gap-3 bg-[var(--gmail-hover)] px-4 py-2.5 rounded-full w-full max-w-2xl border-none focus-within:bg-white focus-within:shadow-md transition-all;
+}
+
+input.gmail-input-basic {
+  @apply bg-transparent border-none outline-none text-sm w-full placeholder:text-slate-500;
+}
+
+/* Glass morphism for specific areas if needed */
+.glass-morphism {
+  @apply bg-white/70 backdrop-blur-md border border-white/20 shadow-sm;
+}
