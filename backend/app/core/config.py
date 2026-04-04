@@ -40,3 +40,6 @@ def get_fireworks_embedding_model() -> str:
 # Token targets for chunking (300–500 range; overlap 50)
 CHUNK_SIZE_TOKENS = int(os.environ.get("EMBED_CHUNK_SIZE_TOKENS", "400"))
 CHUNK_OVERLAP_TOKENS = int(os.environ.get("EMBED_CHUNK_OVERLAP_TOKENS", "50"))
+
+RETRIEVAL_TOP_K = int(os.environ.get("RETRIEVAL_TOP_K", "8"))
+RETRIEVAL_TOP_THREADS = int(os.environ.get("RETRIEVAL_TOP_THREADS", "2"))
