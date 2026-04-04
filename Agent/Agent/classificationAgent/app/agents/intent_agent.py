@@ -1,11 +1,10 @@
-import os
 from groq import Groq
-from dotenv import load_dotenv
+from app.config import get_settings
 
-# Load env
-load_dotenv()
+# Load configuration
+settings = get_settings()
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=settings.groq_api_key)
 
 
 def detect_intent(email_text: str) -> str:
@@ -28,7 +27,7 @@ Email:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=settings.groq_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )

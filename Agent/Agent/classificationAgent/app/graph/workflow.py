@@ -114,6 +114,66 @@ class EmailGraph:
 
         return results
 
+    def invoke(self, input_data):
+        """
+        Process a single email through the agent workflow.
+        Input format: {"email": {"id": "...", "content": "..."}}
+        Returns the processed result in a format suitable for the API response.
+        """
+        try:
+            email_data = input_data.get("email", {})
+            email_id = email_data.get("id", "unknown")
+            email_content = email_data.get("content", "")
+
+            print(f"\n📩 Processing Email via API: {email_id}")
+
+            # ✅ Assume incoming email flow (can be extended to detect outgoing)
+            is_inbox = True
+
+            if is_inbox:
+                # -------------------------
+                # INCOMING EMAIL FLOW
+                # -------------------------
+                category = classify_email(email_content)
+                summary = summarize_email(email_content)
+                tone = None
+                tone_reason = None
+            else:
+                # -------------------------
+                # OUTGOING EMAIL FLOW
+                # -------------------------
+                tone_data = suggest_tone(past_user_emails, email_content, "")
+                tone = tone_data.get("suggested_tone")
+                tone_reason = tone_data.get("reason")
+                category = None
+                summary = None
+
+            # -------------------------
+            # SUPERVISOR (FINAL REPLY)
+            # -------------------------
+            reply = generate_reply(
+                category if category else "general",
+                summary if summary else email_content,
+                tone if tone else "professional"
+            )
+
+            result = {
+                "id": email_id,
+                "content": email_content,
+                "category": category or "general",
+                "summary": summary or "",
+                "suggested_tone": tone or "professional",
+                "tone_reason": tone_reason or "",
+                "reply": reply
+            }
+
+            print("✅ Email processed successfully.")
+            return result
+
+        except Exception as e:
+            print(f"❌ Error in invoke: {str(e)}")
+            raise
+
 
 def build_graph():
     print("🚀 Graph is building...")

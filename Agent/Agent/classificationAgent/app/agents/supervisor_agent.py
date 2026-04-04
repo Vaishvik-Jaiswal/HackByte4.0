@@ -1,16 +1,13 @@
-import os
 from groq import Groq
-from dotenv import load_dotenv
+from app.config import get_settings
 
-# 🔹 Load environment variables
-load_dotenv()
+# 🔹 Load configuration
+settings = get_settings()
 
-api_key = os.getenv("GROQ_API_KEY")
-
-if not api_key:
+if not settings.groq_api_key:
     raise ValueError("❌ GROQ_API_KEY not found in environment variables")
 
-client = Groq(api_key=api_key)
+client = Groq(api_key=settings.groq_api_key)
 
 
 def generate_reply(category: str, summary: str, tone: str) -> str:
@@ -25,7 +22,7 @@ Reply:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
+        model=settings.groq_model,
         messages=[{"role": "user", "content": prompt}],
         temperature=0
     )
