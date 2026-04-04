@@ -6,6 +6,7 @@
 #   backend/.venv/bin/python backend/scripts/db_seed.py
 # Phase 2 — build FAISS (needs FIREWORKS_API_KEY in backend/.env):
 #   backend/.venv/bin/python backend/scripts/embed_pipeline.py
+# Phase 6 — API (from backend/): python -m uvicorn app.embedding_index:app --reload
 
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
@@ -19,3 +20,7 @@ faiss-cpu>=1.8.0
 
 # Phase 5 — LLM: Groq via openai client (GROQ_API_KEY)
 openai>=1.40.0
+
+# Phase 6 — API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0

@@ -8,15 +8,20 @@ Phase 4 — given thread_id: load all emails from Postgres (date ASC), format as
 readable conversation string for LLM / display.
 
 Phase 5 — Grounded LLM answer via Groq OpenAI-compatible API (``openai`` client). Returns ``LLMAnswer``.
+
+Phase 6 — FastAPI ``POST /ask``: query → FAISS → thread → LLM JSON.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+
+from pydantic import BaseModel, Field, model_validator
 
 import tiktoken
 from langchain_community.vectorstores import FAISS
@@ -27,6 +32,9 @@ from psycopg2.extras import RealDictCursor
 from app.core.config import (
     CHUNK_OVERLAP_TOKENS,
     CHUNK_SIZE_TOKENS,
+    RETRIEVAL_TOP_K,
+    RETRIEVAL_TOP_THREADS,
+    get_faiss_data_dir,
     get_fireworks_api_key,
     get_fireworks_embedding_model,
     get_llm_api_key,
@@ -533,3 +541,312 @@ def generate_answer_from_thread(
     base), ``LLM_MODEL`` / ``GROQ_MODEL`` (default ``llama-3.3-70b-versatile``).
     """
     return _generate_answer_groq(user_query, thread_text, temperature=temperature)
+
+
+# --- Phase 6 — full pipeline + FastAPI ---
+
+_cached_faiss_store: FAISS | None = None
+
+
+def get_faiss_store_cached() -> FAISS:
+    """Lazy-load FAISS + embeddings (shared by CLI ``ask`` and ``POST /ask``)."""
+    global _cached_faiss_store
+    if _cached_faiss_store is None:
+        emb = build_fireworks_embeddings()
+        _cached_faiss_store = load_faiss_local(get_faiss_data_dir(), emb)
+    return _cached_faiss_store
+
+
+def run_ask_pipeline(
+    query: str,
+    *,
+    store: FAISS | None = None,
+    top_k: int | None = None,
+    top_threads: int | None = None,
+) -> dict[str, Any]:
+    """
+    Retrieval → Postgres thread → grounded LLM answer. Raises:
+    ``ValueError`` (empty query), ``LookupError`` (no retrieval hits),
+    ``RuntimeError`` (missing ``DATABASE_URL``, empty thread text, missing LLM key).
+    """
+    try:
+        import psycopg2
+    except ImportError as e:
+        raise RuntimeError("Install psycopg2-binary: pip install psycopg2-binary") from e
+
+    q = (query or "").strip()
+    if not q:
+        raise ValueError("query must not be empty")
+
+    url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set (e.g. in backend/.env).")
+
+    k = RETRIEVAL_TOP_K if top_k is None else top_k
+    nt = RETRIEVAL_TOP_THREADS if top_threads is None else top_threads
+
+    faiss_store = store if store is not None else get_faiss_store_cached()
+    threads = retrieve_ranked_threads(faiss_store, q, top_k=k, top_threads=nt)
+    if not threads:
+        raise LookupError("No matching threads from retrieval.")
+
+    top = threads[0]
+    conn = psycopg2.connect(url)
+    try:
+        thread_text = build_thread_conversation(conn, top.thread_id)
+    finally:
+        conn.close()
+
+    if not (thread_text or "").strip():
+        raise RuntimeError(f"Thread text empty for thread_id={top.thread_id!r}")
+
+    llm = generate_answer_from_thread(q, thread_text)
+
+    return {
+        "query": q,
+        "thread_id": top.thread_id,
+        "retrieval": {
+            "best_similarity": round(top.best_similarity, 6),
+            "hit_count": top.hit_count,
+            "threads": [
+                {
+                    "thread_id": t.thread_id,
+                    "best_similarity": round(t.best_similarity, 6),
+                    "hit_count": t.hit_count,
+                }
+                for t in threads
+            ],
+        },
+        "answer": {
+            "answer": llm.answer,
+            "supporting_email": llm.supporting_email,
+            "summary": llm.summary,
+            "confidence": llm.confidence,
+        },
+    }
+
+
+def _email_row_to_api_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """Serialize one DB row for GET /threads (Phase 7–8 UI timeline)."""
+    d = row.get("date")
+    date_str = d.isoformat() if hasattr(d, "isoformat") else str(d or "")
+    return {
+        "id": int(row["id"]),
+        "thread_id": str(row.get("thread_id") or ""),
+        "gmail_msg_id": str(row.get("gmail_msg_id") or ""),
+        "from_json": row.get("from_json"),
+        "to_json": row.get("to_json"),
+        "subject": str(row.get("subject") or ""),
+        "body_text": str(row.get("body_text") or ""),
+        "date": date_str,
+        "sender_display": _sender_display(row.get("from_json")),
+    }
+
+
+def fetch_thread_api_payload(thread_id: str) -> dict[str, Any]:
+    """
+    Load all emails for ``thread_id`` (date ASC). Returns ``{"thread_id", "emails"}``.
+    Raises ``ValueError`` if ``thread_id`` empty; ``RuntimeError`` if DB URL missing.
+    """
+    try:
+        import psycopg2
+    except ImportError as e:
+        raise RuntimeError("Install psycopg2-binary: pip install psycopg2-binary") from e
+
+    tid = (thread_id or "").strip()
+    if not tid:
+        raise ValueError("thread_id must not be empty")
+
+    url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not url:
+        raise RuntimeError("DATABASE_URL is not set (e.g. in backend/.env).")
+
+    conn = psycopg2.connect(url)
+    try:
+        rows = fetch_emails_for_thread(conn, tid)
+    finally:
+        conn.close()
+
+    return {
+        "thread_id": tid,
+        "emails": [_email_row_to_api_dict(r) for r in rows],
+    }
+
+
+# --- Phase 6 — API models (module-level: nested classes break FastAPI /openapi.json) ---
+
+
+class AskBody(BaseModel):
+    """
+    POST /ask JSON body. Send ``{"question": "..."}``. A legacy key ``query`` is
+    merged in ``mode='before'`` so ``{"query": "..."}`` still works without a
+    ``query`` field in the OpenAPI schema (avoids ambiguity with query params).
+    """
+
+    question: str = Field(..., min_length=1, description="Question about your emails")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_query_alias(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        def _s(val: Any) -> str:
+            if val is None:
+                return ""
+            return str(val).strip()
+
+        q_text = _s(data.get("question"))
+        legacy_text = _s(data.get("query"))
+        merged = q_text or legacy_text
+        if merged:
+            return {"question": merged}
+        return data
+
+
+class AnswerOut(BaseModel):
+    answer: str
+    supporting_email: str
+    summary: str
+    confidence: float
+
+
+class RetrievalThreadOut(BaseModel):
+    thread_id: str
+    best_similarity: float
+    hit_count: int
+
+
+class RetrievalOut(BaseModel):
+    best_similarity: float
+    hit_count: int
+    threads: list[RetrievalThreadOut]
+
+
+class AskResponseOut(BaseModel):
+    query: str
+    thread_id: str
+    retrieval: RetrievalOut
+    answer: AnswerOut
+
+
+class EmailThreadRowOut(BaseModel):
+    """One message in a thread (for timeline / source grounding UI)."""
+
+    id: int
+    thread_id: str
+    gmail_msg_id: str
+    from_json: Any
+    to_json: Any
+    subject: str
+    body_text: str
+    date: str
+    sender_display: str
+
+
+class ThreadDetailOut(BaseModel):
+    thread_id: str
+    emails: list[EmailThreadRowOut]
+
+
+class HealthOut(BaseModel):
+    status: str
+    database_configured: bool
+    fireworks_configured: bool
+    llm_configured: bool
+
+
+def _create_app() -> Any:
+    """Build FastAPI app (import fastapi lazily for clearer optional-deps errors)."""
+    from contextlib import asynccontextmanager
+
+    from dotenv import load_dotenv
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+
+    @asynccontextmanager
+    async def lifespan(_app: Any):
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        load_dotenv(env_path)
+        yield
+
+    api = FastAPI(
+        title="Inbox Copilot API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    _origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=_origins or ["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @api.get("/health", response_model=HealthOut)
+    def health() -> HealthOut:
+        db_ok = bool((os.environ.get("DATABASE_URL") or "").strip())
+        llm_ok = bool(get_llm_api_key())
+        fw_ok = bool(get_fireworks_api_key())
+        return HealthOut(
+            status="ok",
+            database_configured=db_ok,
+            fireworks_configured=fw_ok,
+            llm_configured=llm_ok,
+        )
+
+    @api.post("/ask", response_model=AskResponseOut)
+    def ask(payload: AskBody) -> AskResponseOut:
+        try:
+            raw = run_ask_pipeline(payload.question.strip())
+            return AskResponseOut.model_validate(raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(
+                status_code=503,
+                detail="FAISS index missing. Build it with embed_pipeline.py build.",
+            ) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error: {e!s}",
+            ) from e
+
+    @api.get("/threads/{thread_id}", response_model=ThreadDetailOut)
+    def get_thread(thread_id: str) -> ThreadDetailOut:
+        """Phase 7–8: full thread for timeline / grounding UI."""
+        try:
+            raw = fetch_thread_api_payload(thread_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        if not raw.get("emails"):
+            raise HTTPException(
+                status_code=404,
+                detail="Thread not found or has no emails.",
+            )
+        return ThreadDetailOut.model_validate(raw)
+
+    return api
+
+
+app = _create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(
+        "app.embedding_index:app",
+        host=os.environ.get("HOST", "0.0.0.0"),
+        port=port,
+        reload=True,
+    )
