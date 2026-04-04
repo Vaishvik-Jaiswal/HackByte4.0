@@ -43,3 +43,34 @@ CHUNK_OVERLAP_TOKENS = int(os.environ.get("EMBED_CHUNK_OVERLAP_TOKENS", "50"))
 
 RETRIEVAL_TOP_K = int(os.environ.get("RETRIEVAL_TOP_K", "8"))
 RETRIEVAL_TOP_THREADS = int(os.environ.get("RETRIEVAL_TOP_THREADS", "2"))
+
+
+# --- Phase 5 — LLM: Groq OpenAI-compatible Chat Completions (https://console.groq.com) ---
+
+
+def get_llm_api_key() -> str | None:
+    """``GROQ_API_KEY`` only (Phase 5 chat)."""
+    k = (os.environ.get("GROQ_API_KEY") or "").strip()
+    return k or None
+
+
+def get_llm_base_url() -> str:
+    """Groq Chat Completions base; override with ``GROQ_BASE_URL`` or ``OPENAI_BASE_URL``."""
+    explicit = (
+        os.environ.get("GROQ_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or ""
+    ).strip().rstrip("/")
+    if explicit:
+        return explicit
+    return "https://api.groq.com/openai/v1"
+
+
+def get_llm_model() -> str:
+    """Chat model id; override with ``LLM_MODEL`` or ``GROQ_MODEL``."""
+    raw = (
+        os.environ.get("LLM_MODEL")
+        or os.environ.get("GROQ_MODEL")
+        or ""
+    ).strip()
+    if raw:
+        return raw
+    return "llama-3.3-70b-versatile"

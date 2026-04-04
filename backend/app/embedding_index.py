@@ -6,6 +6,8 @@ Phase 3 — load FAISS, query → embedding → top-K chunk search → group by 
 
 Phase 4 — given thread_id: load all emails from Postgres (date ASC), format as a
 readable conversation string for LLM / display.
+
+Phase 5 — Grounded LLM answer via Groq OpenAI-compatible API (``openai`` client). Returns ``LLMAnswer``.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from app.core.config import (
     CHUNK_SIZE_TOKENS,
     get_fireworks_api_key,
     get_fireworks_embedding_model,
+    get_llm_api_key,
+    get_llm_base_url,
+    get_llm_model,
 )
 
 
@@ -360,3 +365,171 @@ def retrieve_ranked_threads(
             )
         )
     return out
+
+
+# --- Phase 5 — LLM: grounded answer from formatted thread ---
+
+
+ANSWER_SYSTEM_PROMPT = """You are Inbox Copilot. You receive a USER QUESTION and an EMAIL THREAD. The thread is the ONLY source of facts.
+
+Rules:
+1. Use ONLY text that appears in the EMAIL THREAD. Do not use outside knowledge, URLs you invent, or assumptions.
+2. If scheduling or details change across emails, trust the LATEST email (by date shown in the thread) over older ones.
+3. If the thread does not contain enough information to answer, say so plainly in "answer" and set "confidence" low (e.g. 0.2–0.4).
+4. "supporting_email" MUST be an exact contiguous quote copied from the EMAIL THREAD (from Subject line or body as written). If nothing fits, use an empty string "".
+5. Respond with valid JSON only: one object, no markdown fences, no text before or after.
+
+Required JSON shape (all keys required):
+{
+  "answer": "<string>",
+  "supporting_email": "<string>",
+  "summary": "<one short sentence>",
+  "confidence": <number from 0.0 to 1.0>
+}
+"""
+
+
+@dataclass(frozen=True)
+class LLMAnswer:
+    """Structured LLM output for Phase 5 (and later /ask API)."""
+
+    answer: str
+    supporting_email: str
+    summary: str
+    confidence: float
+
+
+def build_answer_user_message(user_query: str, thread_text: str) -> str:
+    """User message body: question + thread text for the chat completion."""
+    q = (user_query or "").strip()
+    t = (thread_text or "").strip()
+    return (
+        "USER QUESTION:\n"
+        f"{q}\n\n"
+        "EMAIL THREAD (sole source; messages are ordered oldest → newest):\n"
+        f"{t}"
+    )
+
+
+def _strip_json_fence(raw: str) -> str:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 2 and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines)
+    return text.strip()
+
+
+def _parse_llm_answer_json(content: str) -> LLMAnswer:
+    """Parse model JSON; tolerate minor issues and clamp confidence."""
+    text = _strip_json_fence(content)
+    if not text:
+        return LLMAnswer(
+            answer="",
+            supporting_email="",
+            summary="Empty model response.",
+            confidence=0.0,
+        )
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return LLMAnswer(
+            answer=text[:2000],
+            supporting_email="",
+            summary="Could not parse JSON from the model.",
+            confidence=0.0,
+        )
+    if not isinstance(data, dict):
+        return LLMAnswer(
+            answer=str(data)[:2000],
+            supporting_email="",
+            summary="Model returned non-object JSON.",
+            confidence=0.0,
+        )
+
+    def _s(key: str, default: str = "") -> str:
+        v = data.get(key)
+        if v is None:
+            return default
+        return str(v).strip() if isinstance(v, str) else str(v)
+
+    conf_raw = data.get("confidence", 0.0)
+    try:
+        c = float(conf_raw)
+    except (TypeError, ValueError):
+        c = 0.0
+    c = max(0.0, min(1.0, c))
+
+    return LLMAnswer(
+        answer=_s("answer"),
+        supporting_email=_s("supporting_email"),
+        summary=_s("summary") or _s("answer")[:200],
+        confidence=c,
+    )
+
+
+def _generate_answer_groq(
+    user_query: str,
+    thread_text: str,
+    *,
+    temperature: float,
+) -> LLMAnswer:
+    """Chat Completions on Groq (OpenAI-compatible)."""
+    try:
+        from openai import OpenAI
+    except ImportError as e:
+        raise RuntimeError("Install openai: pip install openai") from e
+
+    api_key = get_llm_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "Set GROQ_API_KEY for Phase 5 (https://console.groq.com)."
+        )
+
+    t = (thread_text or "").strip()
+    if not t:
+        return LLMAnswer(
+            answer="No email thread was provided.",
+            supporting_email="",
+            summary="Missing thread context.",
+            confidence=0.0,
+        )
+
+    client = OpenAI(api_key=api_key, base_url=get_llm_base_url())
+    user_content = build_answer_user_message(user_query, t)
+
+    messages = [
+        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    model = get_llm_model()
+
+    completion = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+
+    raw = ""
+    if completion.choices:
+        raw = completion.choices[0].message.content or ""
+    return _parse_llm_answer_json(raw)
+
+
+def generate_answer_from_thread(
+    user_query: str,
+    thread_text: str,
+    *,
+    temperature: float = 0.2,
+) -> LLMAnswer:
+    """
+    Grounded JSON ``LLMAnswer`` from the email thread.
+
+    Requires ``GROQ_API_KEY``. Optional: ``GROQ_BASE_URL`` (default Groq OpenAI-compatible
+    base), ``LLM_MODEL`` / ``GROQ_MODEL`` (default ``llama-3.3-70b-versatile``).
+    """
+    return _generate_answer_groq(user_query, thread_text, temperature=temperature)

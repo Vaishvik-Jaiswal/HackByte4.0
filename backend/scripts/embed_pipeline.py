@@ -5,23 +5,26 @@ Phase 3 — Smoke-test retrieval: `retrieve "<query>"`.
 
 Loads backend/.env. Build needs FIREWORKS_API_KEY + DATABASE_URL; retrieve needs
 FIREWORKS_API_KEY + existing index under data/faiss (default). Phase 4 thread
-reconstruction needs DATABASE_URL only.
+reconstruction needs DATABASE_URL only. Phase 5 ``ask`` needs GROQ_API_KEY.
 
 Usage (from repo root):
   backend/.venv/bin/pip install -r backend/requirements.txt
   backend/.venv/bin/python backend/scripts/embed_pipeline.py
   backend/.venv/bin/python backend/scripts/embed_pipeline.py retrieve "When is my NVIDIA test?"
   backend/.venv/bin/python backend/scripts/embed_pipeline.py thread thread-nvidia-onsite-2025
+  backend/.venv/bin/python backend/scripts/embed_pipeline.py ask "When is my NVIDIA assessment?"
 
 Or from backend/ with venv active:
   python scripts/embed_pipeline.py
   python scripts/embed_pipeline.py retrieve "reschedule assessment"
   python scripts/embed_pipeline.py thread thread-nvidia-onsite-2025
+  python scripts/embed_pipeline.py ask "What time is the confirmed NVIDIA test?"
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -152,6 +155,81 @@ def cmd_thread(thread_id: str) -> None:
     print(text)
 
 
+def cmd_ask(query: str) -> None:
+    """
+    Phase 5 — retrieve top thread → load full thread from Postgres → Groq grounded answer (JSON).
+    Set GROQ_API_KEY (https://console.groq.com).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        print("Install deps: pip install -r backend/requirements.txt", file=sys.stderr)
+        sys.exit(1)
+
+    from app.core.config import (
+        RETRIEVAL_TOP_K,
+        RETRIEVAL_TOP_THREADS,
+        get_faiss_data_dir,
+    )
+    from app.embedding_index import (
+        build_fireworks_embeddings,
+        build_thread_conversation,
+        generate_answer_from_thread,
+        load_faiss_local,
+        retrieve_ranked_threads,
+    )
+
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        print("DATABASE_URL is not set in backend/.env.", file=sys.stderr)
+        sys.exit(1)
+
+    embeddings = build_fireworks_embeddings()
+    store = load_faiss_local(get_faiss_data_dir(), embeddings)
+    threads = retrieve_ranked_threads(
+        store,
+        query,
+        top_k=RETRIEVAL_TOP_K,
+        top_threads=RETRIEVAL_TOP_THREADS,
+    )
+    if not threads:
+        print(json.dumps({"query": query, "error": "No matching threads from retrieval."}, indent=2))
+        sys.exit(1)
+
+    top = threads[0]
+    conn = None
+    try:
+        conn = psycopg2.connect(url)
+        thread_text = build_thread_conversation(conn, top.thread_id)
+    except Exception as e:
+        print(f"Failed to load thread: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if not (thread_text or "").strip():
+        print(
+            json.dumps(
+                {"query": query, "thread_id": top.thread_id, "error": "Thread text empty."},
+                indent=2,
+            )
+        )
+        sys.exit(1)
+
+    answer = generate_answer_from_thread(query, thread_text)
+    out = {
+        "query": query,
+        "thread_id": top.thread_id,
+        "retrieval": {
+            "best_similarity": round(top.best_similarity, 6),
+            "hit_count": top.hit_count,
+        },
+        "answer": dataclasses.asdict(answer),
+    }
+    print(json.dumps(out, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build FAISS index or run Phase 3 retrieval.")
     sub = parser.add_subparsers(dest="command", required=False)
@@ -164,6 +242,12 @@ def main() -> None:
     p_thread = sub.add_parser("thread", help="Phase 4: print formatted thread text from Postgres.")
     p_thread.add_argument("thread_id", help="e.g. thread-nvidia-onsite-2025")
 
+    p_ask = sub.add_parser(
+        "ask",
+        help="Phase 5: retrieve → thread → Groq LLM answer (needs GROQ_API_KEY).",
+    )
+    p_ask.add_argument("query", nargs="+", help="Question to answer from retrieved email thread")
+
     args = parser.parse_args()
 
     if args.command == "retrieve":
@@ -171,6 +255,9 @@ def main() -> None:
         return
     if args.command == "thread":
         cmd_thread(args.thread_id)
+        return
+    if args.command == "ask":
+        cmd_ask(" ".join(args.query))
         return
 
     # Default and explicit `build`
