@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.session import get_db
 from app.services.gmail_service import gmail_service
+from app.classification.pipeline import process_pending_emails_for_user
 from app.core.security import verify_token
 from app.core.config import settings
 import uuid
@@ -41,6 +42,17 @@ async def get_message_detail(message_id: str, user_id: uuid.UUID = Depends(get_c
 async def sync_emails(user_id: uuid.UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
     try:
         return await gmail_service.sync_emails(db, user_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/process-pending")
+async def process_pending_emails(
+    user_id: uuid.UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)
+):
+    """Retry or run AI on any emails with is_processed=false (e.g. after setting GROQ_API_KEY)."""
+    try:
+        return await process_pending_emails_for_user(db, user_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

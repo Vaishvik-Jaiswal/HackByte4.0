@@ -16,3 +16,4 @@ class Email(Base):
     body_text = Column(Text)
     date = Column(DateTime(timezone=True))
     is_inbox = Column(Boolean, default=True)
+    is_processed = Column(Boolean, default=False, nullable=False)

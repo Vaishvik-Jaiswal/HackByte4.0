@@ -9,6 +9,7 @@ from app.api.auth_routes import router as auth_router
 from app.api.gmail_routes import router as gmail_router
 from app.database.session import engine
 from app.database.base import Base
+from app.database.schema_patches import patch_processed_emails_postgres
 
 # Configure logging
 logging.basicConfig(
@@ -67,6 +68,8 @@ async def startup():
         async with engine.begin() as conn:
             # Create all tables if they don't exist
             await conn.run_sync(Base.metadata.create_all)
+            if settings.DATABASE_URL and "postgresql" in settings.DATABASE_URL:
+                await patch_processed_emails_postgres(conn)
             logger.info("Successfully connected to the database and ensured tables exist.")
     except Exception as e:
         logger.error(f"DATABASE INITIALIZATION ERROR: {e}")

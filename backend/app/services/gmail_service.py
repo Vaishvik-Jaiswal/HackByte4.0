@@ -1,4 +1,5 @@
 import base64
+import logging
 from email.mime.text import MIMEText
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -8,6 +9,9 @@ from sqlalchemy.future import select
 from app.models.user import OAuth
 from app.models.email import Email
 from app.core.config import settings
+from app.classification.pipeline import process_pending_emails_for_user
+
+logger = logging.getLogger(__name__)
 from datetime import datetime
 import json
 from email.utils import parseaddr, parsedate_to_datetime
@@ -88,6 +92,26 @@ class GmailService:
             addresses.append({"name": name, "email": email})
         return addresses
 
+    def _gmail_list_messages_sync(self, creds, label: str, max_results: int):
+        """Fresh client per call — httplib2 (used by google-api-python-client) is not thread-safe."""
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        return (
+            service.users()
+            .messages()
+            .list(userId="me", labelIds=[label], maxResults=max_results)
+            .execute()
+        )
+
+    def _gmail_get_message_sync(self, creds, message_id: str):
+        """Fresh client per call — safe for parallel asyncio.to_thread usage."""
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        return (
+            service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="full")
+            .execute()
+        )
+
     async def sync_emails(self, db: AsyncSession, user_id):
         import asyncio
         from datetime import UTC
@@ -100,7 +124,6 @@ class GmailService:
             return {"status": "error", "message": "Google account not linked"}
 
         creds = await self.refresh_if_needed(db, db_oauth)
-        service = build('gmail', 'v1', credentials=creds)
 
         sync_configs = [
             {"label": "INBOX", "limit": 30, "is_inbox": True},
@@ -113,11 +136,10 @@ class GmailService:
         for config in sync_configs:
             # Run in a thread since googleapiclient is synchronous
             results = await asyncio.to_thread(
-                service.users().messages().list(
-                    userId='me', 
-                    labelIds=[config["label"]], 
-                    maxResults=config["limit"]
-                ).execute
+                self._gmail_list_messages_sync,
+                creds,
+                config["label"],
+                config["limit"],
             )
             messages = results.get('messages', [])
 
@@ -135,7 +157,7 @@ class GmailService:
             # Parallel detail fetch
             async def fetch_and_parse(msg):
                 data = await asyncio.to_thread(
-                    service.users().messages().get(userId='me', id=msg['id'], format='full').execute
+                    self._gmail_get_message_sync, creds, msg["id"]
                 )
                 headers = data.get('payload', {}).get('headers', [])
                 
@@ -164,7 +186,8 @@ class GmailService:
                     subject=subject,
                     body_text=body,
                     date=dt,
-                    is_inbox=config["is_inbox"]
+                    is_inbox=config["is_inbox"],
+                    is_processed=False,
                 )
 
             # Gather all details in parallel for this config
@@ -177,8 +200,28 @@ class GmailService:
             for email in all_new_emails:
                 db.add(email)
             await db.commit()
-            
-        return {"status": "success", "synced": synced_count}
+
+        # Classify / summarize / tone / draft for inbox rows; mark sent as processed.
+        try:
+            ai_processing = await process_pending_emails_for_user(db, user_id)
+        except Exception as e:
+            logger.exception("Email AI pipeline failed after sync for user_id=%s", user_id)
+            # Short message helps local debugging; full traceback is in logs.
+            brief = (str(e).strip().split("\n") or [str(e)])[0][:500]
+            return {
+                "status": "success",
+                "synced": synced_count,
+                "ai_processing": {
+                    "status": "error",
+                    "detail": brief or "AI pipeline failed; check server logs",
+                },
+            }
+
+        return {
+            "status": "success",
+            "synced": synced_count,
+            "ai_processing": ai_processing,
+        }
 
     async def get_messages(self, db: AsyncSession, user_id, label="INBOX"):
         query = select(OAuth).where(OAuth.user_id == user_id, OAuth.provider == "google")
