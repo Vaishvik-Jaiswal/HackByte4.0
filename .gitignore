@@ -11,6 +11,9 @@ backend/.venv/
 frontend/node_modules/
 node_modules/
 
+# Generated vector index (local)
+data/faiss/
+
 # OS / editor
 .DS_Store
 .idea/

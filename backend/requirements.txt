@@ -1,9 +1,18 @@
 # cd backend && python3 -m venv .venv && source .venv/bin/activate
 # pip install -r requirements.txt
 #
-# Migrations (from repo root or backend):
+# Migrations / seed (from repo root or backend):
 #   backend/.venv/bin/python backend/scripts/db_migrate.py
 #   backend/.venv/bin/python backend/scripts/db_seed.py
+# Phase 2 — build FAISS (needs FIREWORKS_API_KEY in backend/.env):
+#   backend/.venv/bin/python backend/scripts/embed_pipeline.py
 
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
+
+# Phase 2 — embeddings + FAISS
+langchain-core>=0.3.0
+langchain-fireworks>=0.2.0
+langchain-community>=0.3.0
+tiktoken>=0.7.0
+faiss-cpu>=1.8.0
