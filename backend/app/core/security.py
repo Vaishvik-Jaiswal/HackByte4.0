@@ -1,10 +1,14 @@
 from datetime import datetime, timedelta
 from typing import Any, Union
+
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
+
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Bcrypt only uses the first 72 bytes of the password (UTF-8); passlib did the same.
+def _password_bytes(password: str) -> bytes:
+    return password.encode("utf-8")[:72]
 
 def create_access_token(subject: Union[str, Any]) -> str:
     expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -26,7 +30,15 @@ def verify_token(token: str, secret: str) -> str:
         return None
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(
+            _password_bytes(plain_password),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
+
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    hashed = bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt())
+    return hashed.decode("utf-8")
