@@ -197,15 +197,6 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ---
 
-## 👥 Team
-
-- Anushka Palewar — AI & Backend  
-- Ankita Pandey — Backend  
-- Vaishvik Jaiswal — Frontend  
-- Ishika Mokati — UI/UX  
-
----
-
 ## ❤️ Final Note
 
 InboxIQ is built to solve one simple problem:
