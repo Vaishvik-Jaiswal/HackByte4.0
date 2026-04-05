@@ -7,7 +7,7 @@
 
 ## 🧠 Overview
 
-InboxIQ is an AI-powered email assistant built on top of the Gmail API.
+InboxIQ is an Intelligent Email Companion built on top of the Gmail API.
 
 It automatically:
 - Classifies emails  
