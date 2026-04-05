@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Send, Loader2, X, Paperclip, MoreVertical, Trash2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,6 +14,20 @@ export default function RedesignedComposePage() {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null); // 'success', 'error'
     const [message, setMessage] = useState('');
+
+    useEffect(() => {
+        try {
+            const raw = sessionStorage.getItem('gmail_compose_prefill');
+            if (!raw) return;
+            const p = JSON.parse(raw);
+            if (p.to) setTo(p.to);
+            if (p.subject) setSubject(p.subject);
+            if (p.body) setBody(p.body);
+            sessionStorage.removeItem('gmail_compose_prefill');
+        } catch {
+            sessionStorage.removeItem('gmail_compose_prefill');
+        }
+    }, []);
 
     const handleSend = async (e) => {
         e.preventDefault();

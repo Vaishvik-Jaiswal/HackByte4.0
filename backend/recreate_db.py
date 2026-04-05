@@ -17,6 +17,7 @@ async def reset_db():
         async with engine.begin() as conn:
             # Drop tables with CASCADE to ensure all constraints are handled
             logger.info("Dropping existing tables (users, oauth, emails, processed_emails)...")
+            await conn.execute(text("DROP TABLE IF EXISTS relay_contexts CASCADE;"))
             await conn.execute(text("DROP TABLE IF EXISTS processed_emails CASCADE;"))
             await conn.execute(text("DROP TABLE IF EXISTS emails CASCADE;"))
             await conn.execute(text("DROP TABLE IF EXISTS oauth CASCADE;"))

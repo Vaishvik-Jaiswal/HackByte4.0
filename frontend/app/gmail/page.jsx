@@ -7,9 +7,23 @@ import apiClient from '../../lib/apiClient';
 import { 
     Mail, RefreshCw, Inbox, ArrowLeft, Loader2, Search, Menu, 
     Settings, HelpCircle, Grid, Send, Trash2, Edit3, AlertCircle, 
-    ChevronLeft, ChevronRight, Star, MoreVertical, Database
+    ChevronLeft, ChevronRight, Star, MoreVertical, Database, Sparkles, Workflow, X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+    AIPipelineDrawer,
+    EmailPipelineTrace,
+    PIPELINE_STAGES,
+} from '../../components/gmail/AIPipelineVisualization';
+
+/** Pull bare email address from a From header for replies. */
+function extractReplyAddress(fromStr) {
+    if (!fromStr || typeof fromStr !== 'string') return '';
+    const angle = fromStr.match(/<([^>]+)>/);
+    if (angle) return angle[1].trim();
+    const loose = fromStr.match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+    return loose ? loose[0].trim() : '';
+}
 
 const SidebarItem = ({ icon: Icon, label, active, onClick, count }) => (
     <div 
@@ -41,6 +55,10 @@ export default function RedesignedGmailPage() {
     const [selectedEmail, setSelectedEmail] = useState(null);
     const [starredIds, setStarredIds] = useState([]);
     const [syncLoading, setSyncLoading] = useState(false);
+    const [pipelineOpen, setPipelineOpen] = useState(false);
+    const [pipelineHighlightIndex, setPipelineHighlightIndex] = useState(0);
+    const [lastAiProcessing, setLastAiProcessing] = useState(null);
+    const [syncBanner, setSyncBanner] = useState(null);
 
     useEffect(() => {
         const savedStarred = localStorage.getItem('gmail_starred_ids');
@@ -48,6 +66,17 @@ export default function RedesignedGmailPage() {
             setStarredIds(JSON.parse(savedStarred));
         }
     }, []);
+
+    // Cycle through pipeline stages while sync + AI run (educational animation for demos).
+    useEffect(() => {
+        if (!syncLoading) return undefined;
+        setPipelineHighlightIndex(0);
+        const n = PIPELINE_STAGES.length;
+        const id = setInterval(() => {
+            setPipelineHighlightIndex((i) => (i + 1) % n);
+        }, 650);
+        return () => clearInterval(id);
+    }, [syncLoading]);
 
     const fetchEmails = async (selectedLabel = label) => {
         if (selectedLabel === 'STARRED') {
@@ -108,16 +137,51 @@ export default function RedesignedGmailPage() {
 
     const handleSyncEmails = async () => {
         setSyncLoading(true);
+        setSyncBanner(null);
         try {
             const response = await apiClient.post('/gmail/sync');
-            alert(`Successfully synced ${response.data.synced} new emails to database!`);
+            const synced = response.data?.synced ?? 0;
+            const ai = response.data?.ai_processing ?? null;
+            setLastAiProcessing(ai);
+
+            let banner = `Synced ${synced} new message(s) from Gmail.`;
+            if (ai?.status === 'ok') {
+                banner += ` AI: ${ai.inbox_processed ?? 0} inbox processed, ${ai.sent_marked_processed ?? 0} sent marked (no generation).`;
+            } else if (ai?.status === 'error') {
+                banner += ` AI error: ${ai.detail || 'see server logs'}.`;
+            } else if (ai?.status === 'skipped') {
+                banner += ` AI skipped (${ai.reason || 'config'}). Open “AI pipeline” for details.`;
+            }
+            setSyncBanner(banner);
+
             fetchEmails(label);
         } catch (err) {
             console.error('Sync failed:', err);
-            alert('Failed to sync emails. Please try again.');
+            setSyncBanner(err.response?.data?.detail || 'Sync failed. Check Google permissions and try again.');
         } finally {
             setSyncLoading(false);
         }
+    };
+
+    const openSuggestedReplyInCompose = (email) => {
+        const ai = email?.ai;
+        if (!ai?.suggested_reply || !ai?.reply_needed) return;
+        const to = extractReplyAddress(email.from);
+        const sub = email.subject || '';
+        const reSubject = sub.toLowerCase().startsWith('re:') ? sub : `Re: ${sub}`;
+        try {
+            sessionStorage.setItem(
+                'gmail_compose_prefill',
+                JSON.stringify({
+                    to,
+                    subject: reSubject,
+                    body: ai.suggested_reply,
+                })
+            );
+        } catch (_) {
+            return;
+        }
+        router.push('/gmail/compose');
     };
 
     if (authLoading) return (
@@ -235,32 +299,57 @@ export default function RedesignedGmailPage() {
                 {/* Main Email Area */}
                 <main className="flex-1 bg-white rounded-t-3xl border border-[#e0e3e9] flex flex-col mr-4 mb-4 shadow-[0_1px_2px_0_rgba(60,64,67,0.3),0_1px_3px_1px_rgba(60,64,67,0.15)] relative">
                     {/* Toolbar */}
-                    <div className="h-[48px] px-4 flex items-center justify-between border-b border-[#f1f3f4]">
-                        <div className="flex items-center gap-2">
-                            <button className="p-2 hover:bg-[#f1f3f4] rounded-full text-[#444746]" onClick={() => fetchEmails(label)} title="Refresh list">
-                                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                            </button>
-                            <button 
-                                onClick={handleSyncEmails}
-                                disabled={syncLoading}
-                                className={`flex items-center gap-2 px-3 py-1.5 hover:bg-[#f1f3f4] rounded-md text-[#444746] text-xs font-semibold uppercase tracking-wider transition-all border border-transparent hover:border-[#f1f3f4] ${syncLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            >
-                                {syncLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
-                                Sync Emails
-                            </button>
-                            <button className="p-2 hover:bg-[#f1f3f4] rounded-full text-[#444746]">
-                                <MoreVertical className="w-4 h-4" />
-                            </button>
+                    <div className="shrink-0 border-b border-[#f1f3f4]">
+                        <div className="h-[48px] px-4 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <button className="p-2 hover:bg-[#f1f3f4] rounded-full text-[#444746]" onClick={() => fetchEmails(label)} title="Refresh list">
+                                    <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                                </button>
+                                <button 
+                                    onClick={handleSyncEmails}
+                                    disabled={syncLoading}
+                                    className={`flex items-center gap-2 px-3 py-1.5 hover:bg-[#f1f3f4] rounded-md text-[#444746] text-xs font-semibold uppercase tracking-wider transition-all border border-transparent hover:border-[#f1f3f4] ${syncLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                >
+                                    {syncLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Database className="w-3.5 h-3.5" />}
+                                    Sync Emails
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setPipelineOpen(true)}
+                                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-[#e8f0fe] rounded-md text-[#0b57d0] text-xs font-semibold uppercase tracking-wider transition-all border border-[#d3e3fd]"
+                                    title="Show how inbox AI runs in the backend"
+                                >
+                                    <Workflow className="w-3.5 h-3.5" />
+                                    AI pipeline
+                                </button>
+                                <button className="p-2 hover:bg-[#f1f3f4] rounded-full text-[#444746]">
+                                    <MoreVertical className="w-4 h-4" />
+                                </button>
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-[#5e5e5e] font-medium">
+                                <span>1 - {visibleEmails.length} of {filteredEmails.length}</span>
+                                <button className="p-2 hover:bg-[#f1f3f4] rounded-full ml-2">
+                                    <ChevronLeft className="w-4 h-4" />
+                                </button>
+                                <button className="p-2 hover:bg-[#f1f3f4] rounded-full">
+                                    <ChevronRight className="w-4 h-4" />
+                                </button>
+                            </div>
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-[#5e5e5e] font-medium">
-                            <span>1 - {visibleEmails.length} of {filteredEmails.length}</span>
-                            <button className="p-2 hover:bg-[#f1f3f4] rounded-full ml-2">
-                                <ChevronLeft className="w-4 h-4" />
-                            </button>
-                            <button className="p-2 hover:bg-[#f1f3f4] rounded-full">
-                                <ChevronRight className="w-4 h-4" />
-                            </button>
-                        </div>
+                        {syncBanner && (
+                            <div className="flex items-start gap-2 border-t border-[#e8f0fe] bg-[#f8fbff] px-4 py-2 text-xs text-[#001d35]">
+                                <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#0b57d0]" />
+                                <p className="min-w-0 flex-1 leading-snug">{syncBanner}</p>
+                                <button
+                                    type="button"
+                                    onClick={() => setSyncBanner(null)}
+                                    className="shrink-0 rounded-full p-1 hover:bg-[#e8f0fe]"
+                                    aria-label="Dismiss"
+                                >
+                                    <X className="h-3.5 w-3.5 text-[#444746]" />
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     {/* Email List Container */}
@@ -311,6 +400,12 @@ export default function RedesignedGmailPage() {
 
                                             <div className="flex-1 flex items-baseline gap-2 overflow-hidden">
                                                 <span className={`text-sm whitespace-nowrap shrink-0 ${!email.isRead ? 'font-bold' : ''}`}>{email.subject}</span>
+                                                {email.ai?.reply_needed && email.ai?.suggested_reply && (
+                                                    <span className="inline-flex items-center gap-0.5 shrink-0 text-[11px] font-semibold uppercase tracking-wide text-[#0b57d0] bg-[#e8f0fe] px-1.5 py-0.5 rounded">
+                                                        <Sparkles className="w-3 h-3" />
+                                                        Draft
+                                                    </span>
+                                                )}
                                                 <span className="text-sm text-[#5e5e5e] truncate break-all">- {email.snippet}</span>
                                             </div>
 
@@ -339,11 +434,11 @@ export default function RedesignedGmailPage() {
                     <AnimatePresence>
                         {selectedEmail && (
                             <motion.div 
-                                initial={{ x: '100%' }}
-                                animate={{ x: 0 }}
-                                exit={{ x: '100%' }}
-                                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                                className="absolute inset-0 bg-white z-50 flex flex-col rounded-t-3xl"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="absolute inset-0 z-50 flex w-full min-w-0 flex-col rounded-t-3xl bg-white"
                             >
                                 <div className="h-[48px] px-4 flex items-center gap-4 border-b border-[#f1f3f4]">
                                     <button 
@@ -359,8 +454,8 @@ export default function RedesignedGmailPage() {
                                         <Trash2 className="w-5 h-5" />
                                     </button>
                                 </div>
-                                <div className="flex-1 overflow-y-auto">
-                                    <div className="max-w-3xl mx-auto w-full px-8 py-8">
+                                <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+                                    <div className="w-full px-6 py-8 text-left sm:px-8">
                                         <h2 className="text-2xl font-normal mb-8 text-[#1f1f1f]">{selectedEmail.subject}</h2>
                                         <div className="flex items-start justify-between mb-8">
                                             <div className="flex items-center gap-3">
@@ -372,35 +467,74 @@ export default function RedesignedGmailPage() {
                                                     <p className="text-xs text-[#5e5e5e]">to me</p>
                                                 </div>
                                             </div>
-                                            <span className="text-xs text-[#5e5e5e]">{selectedEmail.date}</span>
+                                            <span className="text-xs text-[#5e5e5e] shrink-0 ml-4">{selectedEmail.date}</span>
                                         </div>
                                         {(() => {
-                                            const content = selectedEmail.body || selectedEmail.snippet;
-                                            const isHtml = content && (content.includes('<html') || content.includes('<div') || content.includes('<p') || content.includes('<table'));
-                                            
-                                            if (!isHtml) {
-                                                return (
-                                                    <div className="text-sm leading-relaxed text-[#1f1f1f] whitespace-pre-wrap break-words mb-10">
-                                                        {content}
-                                                    </div>
-                                                );
-                                            }
-
-                                            return (
-                                                <div className="w-full mb-10 border border-[#f1f3f4] rounded-xl overflow-hidden bg-white">
-                                                    <iframe 
-                                                        title="Email Content"
-                                                        srcDoc={`
+                                            const email = selectedEmail;
+                                            const ai = email.ai;
+                                            const summaryTrimmed = (ai?.summary || '').trim();
+                                            const showAiSideRail = Boolean(ai);
+                                            const hasSummary = Boolean(summaryTrimmed);
+                                            const mainColumn = (
+                                                <>
+                                                    {ai?.reply_needed && ai?.suggested_reply && (
+                                                        <div className="p-5 rounded-2xl bg-[#e8f0fe] border border-[#c7d9fc]">
+                                                            <div className="flex items-center gap-2 mb-3 flex-wrap">
+                                                                <Sparkles className="w-5 h-5 text-[#0b57d0]" />
+                                                                <p className="text-sm font-semibold text-[#001d35]">Suggested reply</p>
+                                                                {ai.relay_applied && (
+                                                                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[#155e00] bg-[#e6f4ea] px-2 py-0.5 rounded">
+                                                                        Uses prior briefing
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <p className="text-sm text-[#1f1f1f] whitespace-pre-wrap leading-relaxed mb-4">
+                                                                {ai.suggested_reply}
+                                                            </p>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => openSuggestedReplyInCompose(email)}
+                                                                className="inline-flex items-center gap-2 bg-[#0b57d0] hover:bg-[#0842a0] text-white text-sm font-medium px-5 py-2.5 rounded-full shadow-sm transition-colors"
+                                                            >
+                                                                <Send className="w-4 h-4" />
+                                                                Open in compose & send
+                                                            </button>
+                                                            <p className="text-xs text-[#5e5e5e] mt-3">
+                                                                Opens compose with To, Subject, and body filled in — review and tap Send.
+                                                            </p>
+                                                        </div>
+                                                    )}
+                                                    {(() => {
+                                                        const content = email.body || email.snippet;
+                                                        const isHtml = content && (content.includes('<html') || content.includes('<div') || content.includes('<p') || content.includes('<table'));
+                                                        const plainClass = showAiSideRail
+                                                            ? 'text-sm leading-relaxed text-[#1f1f1f] whitespace-pre-wrap break-words pb-6'
+                                                            : 'text-sm leading-relaxed text-[#1f1f1f] whitespace-pre-wrap break-words mb-10';
+                                                        if (!isHtml) {
+                                                            return (
+                                                                <div className={plainClass}>
+                                                                    {content}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        const iframeWrapClass = showAiSideRail
+                                                            ? 'w-full border border-[#f1f3f4] rounded-xl overflow-hidden bg-white'
+                                                            : 'w-full mb-10 border border-[#f1f3f4] rounded-xl overflow-hidden bg-white';
+                                                        return (
+                                                            <div className={iframeWrapClass}>
+                                                                <iframe
+                                                                    title="Email Content"
+                                                                    srcDoc={`
                                                             <!DOCTYPE html>
                                                             <html>
                                                                 <head>
                                                                     <style>
-                                                                        body { 
-                                                                            font-family: 'Roboto', sans-serif; 
-                                                                            font-size: 14px; 
-                                                                            line-height: 1.6; 
-                                                                            color: #1f1f1f; 
-                                                                            margin: 0; 
+                                                                        body {
+                                                                            font-family: 'Roboto', sans-serif;
+                                                                            font-size: 14px;
+                                                                            line-height: 1.6;
+                                                                            color: #1f1f1f;
+                                                                            margin: 0;
                                                                             padding: 24px;
                                                                             word-wrap: break-word;
                                                                         }
@@ -411,10 +545,47 @@ export default function RedesignedGmailPage() {
                                                                 <body>${content}</body>
                                                             </html>
                                                         `}
-                                                        className="w-full min-h-[600px] border-none"
-                                                        sandbox="allow-popups allow-popups-to-escape-sandbox"
-                                                    />
-                                                </div>
+                                                                    className="w-full min-h-[600px] border-none"
+                                                                    sandbox="allow-popups allow-popups-to-escape-sandbox"
+                                                                />
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </>
+                                            );
+
+                                            if (showAiSideRail) {
+                                                return (
+                                                    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(260px,340px)] lg:items-start lg:gap-8 xl:gap-10">
+                                                        <div className="min-w-0 max-w-3xl space-y-6">
+                                                            {mainColumn}
+                                                        </div>
+                                                        <aside className="min-w-0 lg:sticky lg:top-4 lg:self-start">
+                                                            <div className="p-4 rounded-2xl bg-[#f8fafc] border border-[#e2e8f0] shadow-sm">
+                                                                <p className="text-xs font-semibold uppercase tracking-wide text-[#64748b] mb-2">AI summary</p>
+                                                                {hasSummary ? (
+                                                                    <p className="text-sm text-[#1e293b] leading-relaxed">{summaryTrimmed}</p>
+                                                                ) : (
+                                                                    <p className="text-sm text-[#94a3b8] leading-relaxed">
+                                                                        No summary stored yet — tap Sync emails if this message was just added.
+                                                                    </p>
+                                                                )}
+                                                                {ai.category && (
+                                                                    <p className="text-xs text-[#94a3b8] mt-2">Category: {ai.category}</p>
+                                                                )}
+                                                                {ai.tone_reason && (
+                                                                    <p className="text-xs text-[#64748b] mt-2 leading-relaxed border-t border-[#e2e8f0] pt-2">
+                                                                        Tone note: {ai.tone_reason}
+                                                                    </p>
+                                                                )}
+                                                                <EmailPipelineTrace ai={ai} />
+                                                            </div>
+                                                        </aside>
+                                                    </div>
+                                                );
+                                            }
+                                            return (
+                                                <div className="mx-auto w-full max-w-3xl space-y-6">{mainColumn}</div>
                                             );
                                         })()}
                                     </div>
@@ -424,6 +595,14 @@ export default function RedesignedGmailPage() {
                     </AnimatePresence>
                 </main>
             </div>
+
+            <AIPipelineDrawer
+                open={pipelineOpen}
+                onClose={() => setPipelineOpen(false)}
+                syncInProgress={syncLoading}
+                highlightIndex={pipelineHighlightIndex}
+                lastAiProcessing={lastAiProcessing}
+            />
         </div>
 
     );

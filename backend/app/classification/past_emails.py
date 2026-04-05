@@ -10,6 +10,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.email import Email
 
 
+def format_sent_bodies_for_prompt(
+    bodies: list[str],
+    *,
+    empty_message: str = (
+        "(No prior sent emails in database yet — use a balanced professional tone.)"
+    ),
+) -> str:
+    """Format stored sent-mail bodies for LLM prompts (tone + reply style)."""
+    cleaned = [b.strip() for b in bodies if b and str(b).strip()]
+    if not cleaned:
+        return empty_message
+    return "\n\n".join(
+        f"<EMAIL_{i + 1}>\n{text}" for i, text in enumerate(cleaned)
+    )
+
+
 async def fetch_recent_sent_bodies(
     db: AsyncSession, user_id: uuid.UUID, limit: int = 8
 ) -> list[str]:

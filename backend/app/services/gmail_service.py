@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.models.user import OAuth
 from app.models.email import Email
+from app.models.processed_email import ProcessedEmail
 from app.core.config import settings
 from app.classification.pipeline import process_pending_emails_for_user
 
@@ -17,6 +18,33 @@ import json
 from email.utils import parseaddr, parsedate_to_datetime
 
 class GmailService:
+    async def _ai_by_gmail_msg_ids(
+        self, db: AsyncSession, user_id, gmail_msg_ids: list[str]
+    ) -> dict[str, dict]:
+        """Map Gmail message id → AI fields from `processed_emails` (after sync processing)."""
+        if not gmail_msg_ids:
+            return {}
+        q = (
+            select(Email.gmail_msg_id, ProcessedEmail)
+            .join(ProcessedEmail, ProcessedEmail.email_id == Email.id)
+            .where(Email.user_id == user_id, Email.gmail_msg_id.in_(gmail_msg_ids))
+        )
+        result = await db.execute(q)
+        out: dict[str, dict] = {}
+        for gid, pe in result.all():
+            rn = True if pe.reply_needed is None else bool(pe.reply_needed)
+            relay_applied = bool(getattr(pe, "relay_applied", False))
+            out[str(gid)] = {
+                "category": pe.category,
+                "summary": pe.summary,
+                "tone": pe.tone,
+                "tone_reason": pe.tone_reason,
+                "reply_needed": rn,
+                "suggested_reply": pe.suggested_reply if rn else None,
+                "relay_applied": relay_applied,
+            }
+        return out
+
     def get_creds(self, db_oauth: OAuth):
         creds = Credentials(
             token=db_oauth.access_token,
@@ -263,7 +291,12 @@ class GmailService:
                 "snippet": snippet,
                 "body": body
             })
-            
+
+        ids = [m["id"] for m in detailed_messages]
+        ai_map = await self._ai_by_gmail_msg_ids(db, user_id, ids)
+        for m in detailed_messages:
+            m["ai"] = ai_map.get(m["id"])
+
         return detailed_messages
 
     async def get_message_detail(self, db: AsyncSession, user_id, message_id):
@@ -278,7 +311,10 @@ class GmailService:
         service = build('gmail', 'v1', credentials=creds)
         
         msg_data = service.users().messages().get(userId='me', id=message_id, format='full').execute()
-        
+
+        ai_map = await self._ai_by_gmail_msg_ids(db, user_id, [message_id])
+        msg_data["ai"] = ai_map.get(str(message_id))
+
         return msg_data
 
     async def send_email(self, db: AsyncSession, user_id, to, subject, body):

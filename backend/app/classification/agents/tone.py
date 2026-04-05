@@ -1,4 +1,5 @@
 from app.classification.groq_client import get_groq_client
+from app.classification.past_emails import format_sent_bodies_for_prompt
 from app.core.config import settings
 
 
@@ -8,11 +9,7 @@ def suggest_tone(past_emails: list[str], incoming_email: str, summary: str) -> d
     Returns dict with 'suggested_tone' and 'reason'.
     """
     client = get_groq_client()
-    past_emails_text = "\n\n".join(
-        [f"<EMAIL_{i + 1}>\n{email}" for i, email in enumerate(past_emails)]
-    )
-    if not past_emails_text.strip():
-        past_emails_text = "(No prior sent emails in database yet — use a balanced professional tone.)"
+    past_emails_text = format_sent_bodies_for_prompt(past_emails)
 
     prompt = f"""
 You are a Tone Intelligence Agent in an AI email system.

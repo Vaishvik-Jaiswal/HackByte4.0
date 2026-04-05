@@ -87,6 +87,20 @@ BEGIN
   ) THEN
     ALTER TABLE processed_emails ADD COLUMN suggested_reply TEXT;
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'processed_emails' AND column_name = 'reply_needed'
+  ) THEN
+    ALTER TABLE processed_emails ADD COLUMN reply_needed BOOLEAN NOT NULL DEFAULT true;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'processed_emails' AND column_name = 'relay_applied'
+  ) THEN
+    ALTER TABLE processed_emails ADD COLUMN relay_applied BOOLEAN NOT NULL DEFAULT false;
+  END IF;
 END
 $patch$;
 """
